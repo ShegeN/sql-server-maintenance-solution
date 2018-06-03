@@ -5196,7 +5196,10 @@ BEGIN
     SET @Error = @@ERROR
   END
 
-  IF @IncrementalStatistics NOT IN('Y','N') OR @IncrementalStatistics IS NULL OR (@IncrementalStatistics = 'Y' AND @PartitionLevel = 'N')
+  IF @IncrementalStatistics NOT IN('Y','N')
+  OR @IncrementalStatistics IS NULL
+  OR (@IncrementalStatistics = 'Y' AND NOT ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422))
+  OR (@IncrementalStatistics = 'Y' AND @PartitionLevel = 'N')
   BEGIN
     SET @ErrorMessage = 'The value for the parameter @IncrementalStatistics is not supported.' + CHAR(13) + CHAR(10) + ' '
     RAISERROR(@ErrorMessage,16,1) WITH NOWAIT
@@ -5676,14 +5679,14 @@ BEGIN
         END
 
         -- Has the data in the statistics been modified since the statistics was last updated?
-        IF @CurrentStatisticsID IS NOT NULL AND @UpdateStatistics IS NOT NULL AND NOT (@IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1 AND NOT ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422))
+        IF @CurrentStatisticsID IS NOT NULL AND @UpdateStatistics IS NOT NULL
         BEGIN
           SET @CurrentCommand04 = ''
 
           IF @LockTimeout IS NOT NULL SET @CurrentCommand04 = 'SET LOCK_TIMEOUT ' + CAST(@LockTimeout * 1000 AS nvarchar) + '; '
           SET @CurrentCommand04 = @CurrentCommand04 + 'USE ' + QUOTENAME(@CurrentDatabaseName) + '; '
 
-          IF @IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1 AND ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422)
+          IF @IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1
           BEGIN
             SET @CurrentCommand04 = @CurrentCommand04 + 'SELECT @ParamRowCount = [rows], @ParamModificationCounter = modification_counter FROM sys.dm_db_incremental_stats_properties (@ParamObjectID, @ParamStatisticsID) WHERE partition_number = @ParamPartitionNumber'
           END
@@ -5819,7 +5822,7 @@ BEGIN
         -- Update statistics?
         IF @CurrentStatisticsID IS NOT NULL
         AND ((@UpdateStatistics = 'ALL' AND (@CurrentIndexType IN (1,2,3,4,7) OR @CurrentIndexID IS NULL)) OR (@UpdateStatistics = 'INDEX' AND @CurrentIndexID IS NOT NULL AND @CurrentIndexType IN (1,2,3,4,7)) OR (@UpdateStatistics = 'COLUMNS' AND @CurrentIndexID IS NULL))
-        AND (@CurrentModificationCounter > 0 OR @CurrentModificationCounter IS NULL OR @OnlyModifiedStatistics = 'N' OR (@CurrentIsMemoryOptimized = 1 AND NOT (@Version >= 13 OR SERVERPROPERTY('EngineEdition') IN (5,8))))
+        AND (@CurrentModificationCounter > 0 OR @OnlyModifiedStatistics = 'N' OR (@CurrentIsMemoryOptimized = 1 AND NOT (@Version >= 13 OR SERVERPROPERTY('EngineEdition') IN (5,8))))
         AND ((@CurrentIsPartition = 0 AND (@CurrentAction NOT IN('INDEX_REBUILD_ONLINE','INDEX_REBUILD_OFFLINE') OR @CurrentAction IS NULL)) OR (@CurrentIsPartition = 1 AND (@CurrentPartitionNumber = @CurrentPartitionCount OR (@IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1))))
 
         BEGIN
