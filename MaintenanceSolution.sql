@@ -12,7 +12,7 @@ GitHub: https://github.com/olahallengren/sql-server-maintenance-solution
 
 You can contact me by e-mail at ola@hallengren.com.
 
-Last updated 3 June, 2018.
+Last updated 4 June, 2018.
 
 Ola Hallengren
 https://ola.hallengren.com
@@ -4359,7 +4359,6 @@ ALTER PROCEDURE [dbo].[IndexOptimize]
 @WaitAtLowPriorityMaxDuration int = NULL,
 @WaitAtLowPriorityAbortAfterWait nvarchar(max) = NULL,
 @AvailabilityGroups nvarchar(max) = NULL,
-@IncrementalStatistics nvarchar(max) = 'N',
 @LockTimeout int = NULL,
 @LogToTable nvarchar(max) = 'N',
 @Execute nvarchar(max) = 'Y'
@@ -4393,6 +4392,8 @@ BEGIN
   DECLARE @Version numeric(18,10)
   DECLARE @HostPlatform nvarchar(max)
   DECLARE @AmazonRDS bit
+
+  DECLARE @PartitionLevelStatistics bit
 
   DECLARE @CurrentDBID int
   DECLARE @CurrentDatabaseID int
@@ -4601,7 +4602,6 @@ BEGIN
   SET @Parameters = @Parameters + ', @WaitAtLowPriorityMaxDuration = ' + ISNULL(CAST(@WaitAtLowPriorityMaxDuration AS nvarchar),'NULL')
   SET @Parameters = @Parameters + ', @WaitAtLowPriorityAbortAfterWait = ' + ISNULL('''' + REPLACE(@WaitAtLowPriorityAbortAfterWait,'''','''''') + '''','NULL')
   SET @Parameters = @Parameters + ', @AvailabilityGroups = ' + ISNULL('''' + REPLACE(@AvailabilityGroups,'''','''''') + '''','NULL')
-  SET @Parameters = @Parameters + ', @IncrementalStatistics = ' + ISNULL('''' + REPLACE(@IncrementalStatistics,'''','''''') + '''','NULL')
   SET @Parameters = @Parameters + ', @LockTimeout = ' + ISNULL(CAST(@LockTimeout AS nvarchar),'NULL')
   SET @Parameters = @Parameters + ', @LogToTable = ' + ISNULL('''' + REPLACE(@LogToTable,'''','''''') + '''','NULL')
   SET @Parameters = @Parameters + ', @Execute = ' + ISNULL('''' + REPLACE(@Execute,'''','''''') + '''','NULL')
@@ -5196,16 +5196,6 @@ BEGIN
     SET @Error = @@ERROR
   END
 
-  IF @IncrementalStatistics NOT IN('Y','N')
-  OR @IncrementalStatistics IS NULL
-  OR (@IncrementalStatistics = 'Y' AND NOT ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422))
-  OR (@IncrementalStatistics = 'Y' AND @PartitionLevel = 'N')
-  BEGIN
-    SET @ErrorMessage = 'The value for the parameter @IncrementalStatistics is not supported.' + CHAR(13) + CHAR(10) + ' '
-    RAISERROR(@ErrorMessage,16,1) WITH NOWAIT
-    SET @Error = @@ERROR
-  END
-
   IF @LockTimeout < 0
   BEGIN
     SET @ErrorMessage = 'The value for the parameter @LockTimeout is not supported.' + CHAR(13) + CHAR(10) + ' '
@@ -5287,6 +5277,12 @@ BEGIN
     RAISERROR(@ErrorMessage,16,1) WITH NOWAIT
     SET @Error = @@ERROR
   END
+
+  ----------------------------------------------------------------------------------------------------
+  --// Should statistics be updated on the partition level?                                       //--
+  ----------------------------------------------------------------------------------------------------
+
+  SET @PartitionLevelStatistics = CASE WHEN @PartitionLevel = 'Y' AND ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422) THEN 1 ELSE 0 END
 
   ----------------------------------------------------------------------------------------------------
   --// Execute commands                                                                           //--
@@ -5479,7 +5475,7 @@ BEGIN
                                                     + ', stats.no_recompute AS NoRecompute'
                                                     + ', ' + CASE WHEN @Version >= 12 THEN 'stats.is_incremental' ELSE '0' END + ' AS IsIncremental'
                                                     + ', NULL AS PartitionID'
-                                                    + ', ' + CASE WHEN @IncrementalStatistics = 'Y' THEN 'dm_db_incremental_stats_properties.partition_number' ELSE 'NULL' END + ' AS partition_number'
+                                                    + ', ' + CASE WHEN @PartitionLevelStatistics = 1 THEN 'dm_db_incremental_stats_properties.partition_number' ELSE 'NULL' END + ' AS partition_number'
                                                     + ', NULL AS PartitionCount'
                                                     + ', 0 AS [Order]'
                                                     + ', 0 AS Selected'
@@ -5489,7 +5485,7 @@ BEGIN
                                                     + ' INNER JOIN sys.schemas schemas ON objects.[schema_id] = schemas.[schema_id]'
                                                     + ' LEFT OUTER JOIN sys.tables tables ON objects.[object_id] = tables.[object_id]'
 
-          IF @IncrementalStatistics = 'Y'
+          IF @PartitionLevelStatistics = 1
           BEGIN
             SET @CurrentCommand01 = @CurrentCommand01 + ' OUTER APPLY sys.dm_db_incremental_stats_properties(stats.object_id, stats.stats_id) dm_db_incremental_stats_properties'
           END
@@ -5686,7 +5682,7 @@ BEGIN
           IF @LockTimeout IS NOT NULL SET @CurrentCommand04 = 'SET LOCK_TIMEOUT ' + CAST(@LockTimeout * 1000 AS nvarchar) + '; '
           SET @CurrentCommand04 = @CurrentCommand04 + 'USE ' + QUOTENAME(@CurrentDatabaseName) + '; '
 
-          IF @IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1
+          IF @PartitionLevelStatistics = 1 AND @CurrentIsIncremental = 1
           BEGIN
             SET @CurrentCommand04 = @CurrentCommand04 + 'SELECT @ParamRowCount = [rows], @ParamModificationCounter = modification_counter FROM sys.dm_db_incremental_stats_properties (@ParamObjectID, @ParamStatisticsID) WHERE partition_number = @ParamPartitionNumber'
           END
@@ -5823,7 +5819,7 @@ BEGIN
         IF @CurrentStatisticsID IS NOT NULL
         AND ((@UpdateStatistics = 'ALL' AND (@CurrentIndexType IN (1,2,3,4,7) OR @CurrentIndexID IS NULL)) OR (@UpdateStatistics = 'INDEX' AND @CurrentIndexID IS NOT NULL AND @CurrentIndexType IN (1,2,3,4,7)) OR (@UpdateStatistics = 'COLUMNS' AND @CurrentIndexID IS NULL))
         AND (@CurrentModificationCounter > 0 OR @OnlyModifiedStatistics = 'N' OR (@CurrentIsMemoryOptimized = 1 AND NOT (@Version >= 13 OR SERVERPROPERTY('EngineEdition') IN (5,8))))
-        AND ((@CurrentIsPartition = 0 AND (@CurrentAction NOT IN('INDEX_REBUILD_ONLINE','INDEX_REBUILD_OFFLINE') OR @CurrentAction IS NULL)) OR (@CurrentIsPartition = 1 AND (@CurrentPartitionNumber = @CurrentPartitionCount OR (@IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1))))
+        AND ((@CurrentIsPartition = 0 AND (@CurrentAction NOT IN('INDEX_REBUILD_ONLINE','INDEX_REBUILD_OFFLINE') OR @CurrentAction IS NULL)) OR (@CurrentIsPartition = 1 AND (@CurrentPartitionNumber = @CurrentPartitionCount OR (@PartitionLevelStatistics = 1 AND @CurrentIsIncremental = 1))))
 
         BEGIN
           SET @CurrentUpdateStatistics = 'Y'
@@ -5844,7 +5840,7 @@ BEGIN
         END
 
         -- Incremental statistics only supports RESAMPLE
-        IF @IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1
+        IF @PartitionLevelStatistics = 1 AND @CurrentIsIncremental = 1
         BEGIN
           SET @CurrentStatisticsSample = NULL
           SET @CurrentStatisticsResample = 'Y'
@@ -6039,7 +6035,7 @@ BEGIN
 
           IF @CurrentUpdateStatisticsWithClause IS NOT NULL SET @CurrentCommand07 = @CurrentCommand07 + @CurrentUpdateStatisticsWithClause
 
-          IF @IncrementalStatistics = 'Y' AND @CurrentIsIncremental = 1 AND @CurrentPartitionNumber IS NOT NULL SET @CurrentCommand07 = @CurrentCommand07 + ' ON PARTITIONS(' + CAST(@CurrentPartitionNumber AS nvarchar(max)) + ')'
+          IF @PartitionLevelStatistics = 1 AND @CurrentIsIncremental = 1 AND @CurrentPartitionNumber IS NOT NULL SET @CurrentCommand07 = @CurrentCommand07 + ' ON PARTITIONS(' + CAST(@CurrentPartitionNumber AS nvarchar(max)) + ')'
 
           EXECUTE @CurrentCommandOutput07 = [dbo].[CommandExecute] @Command = @CurrentCommand07, @CommandType = @CurrentCommandType07, @Mode = 2, @Comment = @CurrentComment07, @DatabaseName = @CurrentDatabaseName, @SchemaName = @CurrentSchemaName, @ObjectName = @CurrentObjectName, @ObjectType = @CurrentObjectType, @IndexName = @CurrentIndexName, @IndexType = @CurrentIndexType, @StatisticsName = @CurrentStatisticsName, @ExtendedInfo = @CurrentExtendedInfo07, @LogToTable = @LogToTable, @Execute = @Execute
           SET @Error = @@ERROR
