@@ -957,7 +957,7 @@ BEGIN
   --// Should statistics be updated on the partition level?                                       //--
   ----------------------------------------------------------------------------------------------------
 
-  SET @PartitionLevelStatistics = CASE WHEN @PartitionLevel = 'Y' AND ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422) THEN 1 ELSE 0 END
+  SET @PartitionLevelStatistics = CASE WHEN @PartitionLevel = 'Y' AND ((@Version >= 12.05 AND @Version < 13) OR @Version >= 13.04422) OR SERVERPROPERTY('EngineEdition') IN (5,8) THEN 1 ELSE 0 END
 
   ----------------------------------------------------------------------------------------------------
   --// Execute commands                                                                           //--
